@@ -23,7 +23,7 @@ def convert_numpy_types(obj):
         return obj
 
 # Cấu hình server quản lý
-MANAGEMENT_SERVER_URL = "http://192.168.137.94:8080"  # Có thể thay đổi theo môi trường
+MANAGEMENT_SERVER_URL = "http://192.168.1.12:8080"  # Có thể thay đổi theo môi trường
 DASHBOARD_UPLOAD_URL = "https://dashboard-sgteam.onrender.com/api/navigation/upload-image"  # Dashboard admin URL
 CAMERA_ID = "cam_001"  # ID camera mặc định
 
@@ -88,6 +88,17 @@ CAMERA_POSITION_MAP = {
         "position": [9, 15],     # Main walking area
         "area_name": "Central Walking Area",
         "zone_size": [6, 4]
+    },
+    # ESP32-CAM devices - Checkout counter cameras
+    "esp32cam_02": {
+        "position": [5, 8],      # Checkout counter 1
+        "area_name": "Checkout Counter 1",
+        "zone_size": [3, 3]
+    },
+    "esp32cam_03": {
+        "position": [15, 8],     # Checkout counter 2
+        "area_name": "Checkout Counter 2",
+        "zone_size": [3, 3]
     }
 }
 
@@ -172,6 +183,74 @@ def upload_labeled_image_to_dashboard(image_path, analysis_result, camera_id):
     except Exception as e:
         print(f"❌ Error uploading image: {e}")
         return False
+
+def send_checkout_update(analysis_result, camera_id):
+    """
+    Gửi thông tin cập nhật quầy tính tiền về server quản lý
+    Chạy trong thread riêng để không chặn luồng chính
+    """
+    try:
+        # Lấy thông tin từ kết quả AI
+        people_count = analysis_result.get("total_people", 0)
+        crowd_analysis = analysis_result.get("crowd_analysis", {})
+        
+        # Tính toán queue_length dựa trên crowd analysis
+        queue_length = 0
+        if "crowds" in crowd_analysis:
+            # Nếu có crowds, lấy crowd lớn nhất làm queue
+            max_crowd_size = 0
+            for crowd in crowd_analysis["crowds"]:
+                crowd_size = crowd.get("people_count", 0)
+                if crowd_size > max_crowd_size:
+                    max_crowd_size = crowd_size
+            queue_length = max_crowd_size
+        else:
+            # Nếu không có crowds, tất cả people_count là queue
+            queue_length = people_count
+        
+        # Ước tính thời gian chờ (30 giây mỗi người)
+        wait_time_estimate = queue_length * 30  # seconds
+        
+        # Xác định trạng thái quầy
+        if people_count == 0:
+            status = "closed"
+        elif queue_length <= 3:
+            status = "open"
+        elif queue_length <= 8:
+            status = "busy"
+        else:
+            status = "very_busy"
+        
+        # Chuẩn bị payload
+        checkout_data = {
+            "camera_id": camera_id,
+            "people_count": people_count,
+            "queue_length": queue_length,
+            "wait_time_estimate": wait_time_estimate,
+            "status": status,
+            "timestamp": datetime.now().isoformat(),
+            "confidence": analysis_result.get("confidence", 0.0),
+            "analysis_status": "success" if not analysis_result.get("error") else "failed"
+        }
+        
+        # Gửi đến endpoint checkout
+        response = requests.post(
+            f"{MANAGEMENT_SERVER_URL}/api/checkout/update",
+            json=checkout_data,
+            timeout=5,
+            headers={"Content-Type": "application/json"}
+        )
+        
+        if response.status_code == 200:
+            print(f"✅ Sent checkout update: {camera_id} - {people_count} people, queue: {queue_length}, status: {status}")
+            print(f"   ⏱️ Wait time estimate: {wait_time_estimate}s")
+        else:
+            print(f"⚠️ Checkout update failed: {response.status_code} - {response.text}")
+            
+    except requests.exceptions.RequestException as e:
+        print(f"⚠️ Could not reach management server for checkout: {e}")
+    except Exception as e:
+        print(f"❌ Error sending checkout update: {e}")
 
 def send_crowd_update(analysis_result, camera_id=CAMERA_ID):
     """
@@ -373,11 +452,38 @@ def upload():
                     daemon=True
                 ).start()
                 
+                # 🛒 Gửi thông tin checkout nếu là ESP32 camera
+                if camera_id in ["esp32cam_02", "esp32cam_03"]:
+                    threading.Thread(
+                        target=send_checkout_update,
+                        args=(analysis_result, camera_id),
+                        daemon=True
+                    ).start()
+                
         except Exception as e:
             print(f"❌ AI Analysis error: {e}")
             analysis_result = {"error": str(e)}
     
-    # 🚀 LUÔN upload hình ảnh lên dashboard (dù có kết quả AI hay không)
+    # � LUÔN gửi checkout update nếu là ESP32 camera (dù có lỗi AI)
+    if camera_id in ["esp32cam_02", "esp32cam_03"]:
+        # Tạo analysis_result mặc định cho checkout nếu AI failed
+        checkout_analysis = analysis_result if analysis_result and not analysis_result.get("error") else {
+            "total_people": 0,
+            "crowd_analysis": {"crowds": []},
+            "confidence": 0.0,
+            "error": analysis_result.get("error", "AI analysis failed") if analysis_result else "No AI result",
+            "camera_id": camera_id,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        print(f"🛒 Forcing checkout update for {camera_id}")
+        threading.Thread(
+            target=send_checkout_update,
+            args=(checkout_analysis, camera_id),
+            daemon=True
+        ).start()
+    
+    # �🚀 LUÔN upload hình ảnh lên dashboard (dù có kết quả AI hay không)
     # Tạo analysis_result mặc định nếu không có
     if not analysis_result:
         analysis_result = {
