@@ -94,28 +94,36 @@ CAMERA_POSITION_MAP = {
 def upload_labeled_image_to_dashboard(image_path, analysis_result, camera_id):
     """
     Upload hình ảnh đã được label lên dashboard admin
+    LUÔN upload dù có kết quả AI hay không
     """
     try:
-        # Chuẩn bị processed_data từ kết quả phân tích
+        # Chuẩn bị processed_data từ kết quả phân tích (hoặc mặc định nếu không có)
         processed_data = {
             "objects": [],
             "confidence": 0.0,
             "total_people": analysis_result.get("total_people", 0),
             "crowd_analysis": analysis_result.get("crowd_analysis", {}),
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
+            "analysis_status": "success" if not analysis_result.get("error") else "failed",
+            "error_message": analysis_result.get("error", "")
         }
         
-        # Extract objects và confidence từ analysis_result
-        if "detections" in analysis_result:
+        # Extract objects và confidence từ analysis_result (nếu có)
+        if "detections" in analysis_result and analysis_result["detections"]:
             for detection in analysis_result["detections"]:
                 if detection.get("class") == "person":
                     processed_data["objects"].append("person")
                     processed_data["confidence"] = max(processed_data["confidence"], detection.get("confidence", 0.0))
         
-        # Nếu không có detection, dùng thông tin từ crowd_analysis
-        if not processed_data["objects"] and processed_data["total_people"] > 0:
+        # Nếu không có detection nhưng có total_people, tạo objects mặc định
+        elif processed_data["total_people"] > 0:
             processed_data["objects"] = ["person"] * processed_data["total_people"]
-            processed_data["confidence"] = 0.8  # Default confidence
+            processed_data["confidence"] = 0.7  # Default confidence cho trường hợp này
+        
+        # Nếu hoàn toàn không có dữ liệu người, vẫn upload với thông tin "no_detection"
+        else:
+            processed_data["objects"] = ["no_detection"]
+            processed_data["confidence"] = 1.0  # Chắc chắn là không phát hiện được gì
         
         # Lấy thông tin location từ camera mapping
         camera_info = CAMERA_POSITION_MAP.get(camera_id, {})
@@ -123,7 +131,7 @@ def upload_labeled_image_to_dashboard(image_path, analysis_result, camera_id):
         
         # Kiểm tra file tồn tại
         if not os.path.exists(image_path):
-            print(f"⚠️ Labeled image not found: {image_path}")
+            print(f"⚠️ Image not found: {image_path}")
             return False
         
         # Chuẩn bị files và data
@@ -146,9 +154,13 @@ def upload_labeled_image_to_dashboard(image_path, analysis_result, camera_id):
             )
             
             if response.status_code == 200:
-                print(f"✅ Successfully uploaded labeled image to dashboard: {camera_id} - {location}")
+                status_icon = "✅" if processed_data["analysis_status"] == "success" else "⚠️"
+                print(f"{status_icon} Uploaded image to dashboard: {camera_id} - {location}")
                 print(f"   👥 Total people: {processed_data['total_people']}")
                 print(f"   🎯 Confidence: {processed_data['confidence']:.2f}")
+                print(f"   🔍 Objects: {processed_data['objects']}")
+                if processed_data.get("error_message"):
+                    print(f"   ❌ Analysis error: {processed_data['error_message']}")
                 return True
             else:
                 print(f"⚠️ Dashboard upload failed: {response.status_code} - {response.text}")
@@ -158,7 +170,7 @@ def upload_labeled_image_to_dashboard(image_path, analysis_result, camera_id):
         print(f"⚠️ Could not upload to dashboard: {e}")
         return False
     except Exception as e:
-        print(f"❌ Error uploading labeled image: {e}")
+        print(f"❌ Error uploading image: {e}")
         return False
 
 def send_crowd_update(analysis_result, camera_id=CAMERA_ID):
@@ -323,12 +335,13 @@ def upload():
     
     # Chạy AI phân tích đám đông
     analysis_result = None
+    result_path = os.path.join(RESULTS_FOLDER, f"analysis_{filename}")
+    
     if ai_detector:
         try:
             print(f"🤖 Analyzing crowd in: {filename}")
             
             # Chạy AI detection
-            result_path = os.path.join(RESULTS_FOLDER, f"analysis_{filename}")
             analysis_result = ai_detector.detect_single_image(
                 image_path, 
                 result_path, 
@@ -353,13 +366,6 @@ def upload():
                 
                 print(f"💾 Analysis saved: {json_path}")
                 
-                # 🚀 Upload hình ảnh đã được label lên dashboard admin (chạy trong thread riêng)
-                threading.Thread(
-                    target=upload_labeled_image_to_dashboard,
-                    args=(result_path, analysis_result, camera_id),
-                    daemon=True
-                ).start()
-                
                 # 🚀 Gửi thông tin về server quản lý (chạy trong thread riêng)
                 threading.Thread(
                     target=send_crowd_update, 
@@ -370,6 +376,30 @@ def upload():
         except Exception as e:
             print(f"❌ AI Analysis error: {e}")
             analysis_result = {"error": str(e)}
+    
+    # 🚀 LUÔN upload hình ảnh lên dashboard (dù có kết quả AI hay không)
+    # Tạo analysis_result mặc định nếu không có
+    if not analysis_result:
+        analysis_result = {
+            "total_people": 0,
+            "crowd_analysis": {"total_crowds": 0, "isolated_people": 0},
+            "error": "AI analysis failed or not available",
+            "camera_id": camera_id,
+            "camera_info": CAMERA_POSITION_MAP.get(camera_id, {
+                "area_name": "Unknown Area",
+                "position": [10, 10]
+            })
+        }
+    
+    # Nếu không có file kết quả AI (result_path), sử dụng ảnh gốc
+    upload_image_path = result_path if os.path.exists(result_path) else image_path
+    
+    # Upload lên dashboard (chạy trong thread riêng)
+    threading.Thread(
+        target=upload_labeled_image_to_dashboard,
+        args=(upload_image_path, analysis_result, camera_id),
+        daemon=True
+    ).start()
     
     # Xóa ảnh gốc sau khi xử lý xong để tiết kiệm dung lượng
     try:
