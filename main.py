@@ -24,6 +24,7 @@ def convert_numpy_types(obj):
 
 # Cấu hình server quản lý
 MANAGEMENT_SERVER_URL = "http://192.168.137.94:8080"  # Có thể thay đổi theo môi trường
+DASHBOARD_UPLOAD_URL = "https://dashboard-sgteam.onrender.com/api/navigation/upload-image"  # Dashboard admin URL
 CAMERA_ID = "cam_001"  # ID camera mặc định
 
 # Map camera_id với position trên map 20x20 và thông tin khu vực
@@ -89,6 +90,76 @@ CAMERA_POSITION_MAP = {
         "zone_size": [6, 4]
     }
 }
+
+def upload_labeled_image_to_dashboard(image_path, analysis_result, camera_id):
+    """
+    Upload hình ảnh đã được label lên dashboard admin
+    """
+    try:
+        # Chuẩn bị processed_data từ kết quả phân tích
+        processed_data = {
+            "objects": [],
+            "confidence": 0.0,
+            "total_people": analysis_result.get("total_people", 0),
+            "crowd_analysis": analysis_result.get("crowd_analysis", {}),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Extract objects và confidence từ analysis_result
+        if "detections" in analysis_result:
+            for detection in analysis_result["detections"]:
+                if detection.get("class") == "person":
+                    processed_data["objects"].append("person")
+                    processed_data["confidence"] = max(processed_data["confidence"], detection.get("confidence", 0.0))
+        
+        # Nếu không có detection, dùng thông tin từ crowd_analysis
+        if not processed_data["objects"] and processed_data["total_people"] > 0:
+            processed_data["objects"] = ["person"] * processed_data["total_people"]
+            processed_data["confidence"] = 0.8  # Default confidence
+        
+        # Lấy thông tin location từ camera mapping
+        camera_info = CAMERA_POSITION_MAP.get(camera_id, {})
+        location = camera_info.get("area_name", "Unknown Area")
+        
+        # Kiểm tra file tồn tại
+        if not os.path.exists(image_path):
+            print(f"⚠️ Labeled image not found: {image_path}")
+            return False
+        
+        # Chuẩn bị files và data
+        with open(image_path, 'rb') as img_file:
+            files = {
+                'file': ('image.jpg', img_file, 'image/jpeg')
+            }
+            
+            data = {
+                'device_id': camera_id,
+                'location': location,
+                'processed_data': json.dumps(processed_data)
+            }
+            
+            response = requests.post(
+                DASHBOARD_UPLOAD_URL,
+                files=files,
+                data=data,
+                timeout=30  # Timeout 30s cho upload
+            )
+            
+            if response.status_code == 200:
+                print(f"✅ Successfully uploaded labeled image to dashboard: {camera_id} - {location}")
+                print(f"   👥 Total people: {processed_data['total_people']}")
+                print(f"   🎯 Confidence: {processed_data['confidence']:.2f}")
+                return True
+            else:
+                print(f"⚠️ Dashboard upload failed: {response.status_code} - {response.text}")
+                return False
+                
+    except requests.exceptions.RequestException as e:
+        print(f"⚠️ Could not upload to dashboard: {e}")
+        return False
+    except Exception as e:
+        print(f"❌ Error uploading labeled image: {e}")
+        return False
 
 def send_crowd_update(analysis_result, camera_id=CAMERA_ID):
     """
@@ -281,6 +352,13 @@ def upload():
                     json.dump(analysis_result, f, indent=2, ensure_ascii=False)
                 
                 print(f"💾 Analysis saved: {json_path}")
+                
+                # 🚀 Upload hình ảnh đã được label lên dashboard admin (chạy trong thread riêng)
+                threading.Thread(
+                    target=upload_labeled_image_to_dashboard,
+                    args=(result_path, analysis_result, camera_id),
+                    daemon=True
+                ).start()
                 
                 # 🚀 Gửi thông tin về server quản lý (chạy trong thread riêng)
                 threading.Thread(
@@ -479,13 +557,14 @@ def manage_cameras():
 @app.route('/config', methods=['GET', 'POST'])
 def manage_config():
     """Quản lý cấu hình server"""
-    global MANAGEMENT_SERVER_URL, CAMERA_ID
+    global MANAGEMENT_SERVER_URL, DASHBOARD_UPLOAD_URL, CAMERA_ID
     
     if request.method == 'GET':
         return jsonify({
             "status": "success",
             "config": {
                 "management_server_url": MANAGEMENT_SERVER_URL,
+                "dashboard_upload_url": DASHBOARD_UPLOAD_URL,
                 "camera_id": CAMERA_ID,
                 "total_cameras_mapped": len(CAMERA_POSITION_MAP)
             }
@@ -499,6 +578,10 @@ def manage_config():
                 MANAGEMENT_SERVER_URL = config['management_server_url']
                 print(f"🔧 Updated management server URL: {MANAGEMENT_SERVER_URL}")
             
+            if 'dashboard_upload_url' in config:
+                DASHBOARD_UPLOAD_URL = config['dashboard_upload_url']
+                print(f"🔧 Updated dashboard upload URL: {DASHBOARD_UPLOAD_URL}")
+            
             if 'camera_id' in config:
                 CAMERA_ID = config['camera_id']
                 print(f"🔧 Updated camera ID: {CAMERA_ID}")
@@ -508,6 +591,7 @@ def manage_config():
                 "message": "Configuration updated",
                 "config": {
                     "management_server_url": MANAGEMENT_SERVER_URL,
+                    "dashboard_upload_url": DASHBOARD_UPLOAD_URL,
                     "camera_id": CAMERA_ID,
                     "total_cameras_mapped": len(CAMERA_POSITION_MAP)
                 }
@@ -554,6 +638,7 @@ if __name__ == "__main__":
     print("🚀 CROWD DETECTION SERVER STARTING")
     print("="*50)
     print(f"📡 Management Server: {MANAGEMENT_SERVER_URL}")
+    print(f"🌐 Dashboard Upload: {DASHBOARD_UPLOAD_URL}")
     print(f"📹 Default Camera ID: {CAMERA_ID}")
     print(f"🗺️  Camera Mapping: {len(CAMERA_POSITION_MAP)} cameras configured")
     print(f"🌐 Server will run on: http://0.0.0.0:7863")
