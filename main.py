@@ -23,7 +23,7 @@ def convert_numpy_types(obj):
         return obj
 
 # Cấu hình server quản lý
-MANAGEMENT_SERVER_URL = "http://192.168.1.12:8080"  # Có thể thay đổi theo môi trường
+MANAGEMENT_SERVER_URL = "http://192.168.137.251:8080"  # Có thể thay đổi theo môi trường
 DASHBOARD_UPLOAD_URL = "https://dashboard-sgteam.onrender.com/api/navigation/upload-image"  # Dashboard admin URL
 CAMERA_ID = "cam_001"  # ID camera mặc định
 
