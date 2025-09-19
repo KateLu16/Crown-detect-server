@@ -465,7 +465,7 @@ def upload():
             analysis_result = {"error": str(e)}
     
     # � LUÔN gửi checkout update nếu là ESP32 camera (dù có lỗi AI)
-    if camera_id in ["esp32cam_02", "esp32cam_03"]:
+    if camera_id in ["esp32cam_01","esp32cam_02", "esp32cam_03"]:
         # Tạo analysis_result mặc định cho checkout nếu AI failed
         checkout_analysis = analysis_result if analysis_result and not analysis_result.get("error") else {
             "total_people": 0,
