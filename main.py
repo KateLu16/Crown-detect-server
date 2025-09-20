@@ -23,13 +23,13 @@ def convert_numpy_types(obj):
         return obj
 
 # Cấu hình server quản lý
-MANAGEMENT_SERVER_URL = "http://192.168.0.110:8080"  # Có thể thay đổi theo môi trường
+MANAGEMENT_SERVER_URL = "http://192.168.1.103:8080"  # Có thể thay đổi theo môi trường
 DASHBOARD_UPLOAD_URL = "https://dashboard-sgteam.onrender.com/api/navigation/upload-image"  # Dashboard admin URL
 CAMERA_ID = "cam_001"  # ID camera mặc định
 
 # Map camera_id với position trên map 20x20 và thông tin khu vực
 CAMERA_POSITION_MAP = {
-    "cam_001": {
+    "esp32cam_01": {
         "position": [1, 0],      # Main entrance
         "area_name": "Main Entrance",
         "zone_size": [3, 2]      # Monitor entrance area
